@@ -1,0 +1,387 @@
+# ============================================
+# 1. Kubernetes CronJob Configuration
+# ============================================
+# File: k8s-apmc-cronjob.yaml
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: apmc-market-data-scraper
+  namespace: default
+spec:
+  # Run every 6 hours at minutes 0
+  schedule: "0 */6 * * *"
+  # Alternative schedules:
+  # "0 2,8,14,20 * * *"  # 4 times daily at 2am, 8am, 2pm, 8pm
+  # "0 6 * * *"          # Daily at 6am
+  # "*/30 * * * *"       # Every 30 minutes
+  
+  timeZone: "Asia/Kolkata"
+  concurrencyPolicy: Forbid  # Don't run concurrent jobs
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 300
+  
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600  # 1 hour timeout
+      ttlSecondsAfterFinished: 86400  # Clean up after 24 hours
+      
+      template:
+        metadata:
+          labels:
+            app: apmc-scraper
+            version: v1
+        spec:
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: market-scraper
+            image: python:3.11-slim
+            imagePullPolicy: IfNotPresent
+            
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "Installing dependencies..."
+              pip install --no-cache-dir requests beautifulsoup4 lxml supabase
+              echo "Starting market data scraper..."
+              python /app/fetch_real_marketdata.py
+            
+            env:
+            - name: SUPABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: apmc-secrets
+                  key: supabase-url
+            
+            - name: SUPABASE_SERVICE_ROLE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: apmc-secrets
+                  key: supabase-key
+            
+            - name: LOG_LEVEL
+              value: "INFO"
+            
+            - name: REQUESTS_TIMEOUT
+              value: "30"
+            
+            - name: THROTTLE_SECONDS
+              value: "1.2"
+            
+            - name: UPSERT_BATCH_SIZE
+              value: "100"
+            
+            - name: MAX_RETRIES
+              value: "3"
+            
+            - name: ENABLE_CACHING
+              value: "true"
+            
+            - name: COMMODITY_HTML_DIR
+              value: "/app/commodity_html"
+            
+            volumeMounts:
+            - name: script-volume
+              mountPath: /app
+            
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+          
+          volumes:
+          - name: script-volume
+            configMap:
+              name: apmc-scraper-script
+
+---
+# ConfigMap for the Python script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apmc-scraper-script
+  namespace: default
+data:
+  fetch_real_marketdata.py: |
+    # Paste your improved Python script here
+    # (Full script content from above)
+
+---
+# Secret for Supabase credentials
+# Create this with: kubectl create secret generic apmc-secrets \
+#   --from-literal=supabase-url='YOUR_URL' \
+#   --from-literal=supabase-key='YOUR_KEY'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: apmc-secrets
+  namespace: default
+type: Opaque
+stringData:
+  supabase-url: "YOUR_SUPABASE_URL"
+  supabase-key: "YOUR_SUPABASE_SERVICE_ROLE_KEY"
+
+---
+
+# ============================================
+# 2. Docker Compose with Cron
+# ============================================
+# File: docker-compose.yml
+version: '3.8'
+
+services:
+  apmc-scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: apmc-market-scraper
+    environment:
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - LOG_LEVEL=INFO
+      - REQUESTS_TIMEOUT=30
+      - THROTTLE_SECONDS=1.2
+      - UPSERT_BATCH_SIZE=100
+      - MAX_RETRIES=3
+      - ENABLE_CACHING=true
+      - COMMODITY_HTML_DIR=/app/commodity_html
+    volumes:
+      - ./fetch_real_marketdata.py:/app/fetch_real_marketdata.py
+      - ./commodity_html:/app/commodity_html
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: >
+      sh -c "
+      echo '0 */6 * * * cd /app && python fetch_real_marketdata.py >> /app/logs/cron.log 2>&1' > /etc/crontabs/root &&
+      crond -f -l 2
+      "
+
+---
+
+# ============================================
+# 3. Dockerfile for the scraper
+# ============================================
+# File: Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    cron \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY fetch_real_marketdata.py .
+COPY commodity_html/ ./commodity_html/
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Setup cron
+RUN echo "0 */6 * * * cd /app && python /app/fetch_real_marketdata.py >> /app/logs/cron.log 2>&1" > /etc/crontab
+RUN crontab /etc/crontab
+
+CMD ["cron", "-f"]
+
+---
+
+# ============================================
+# 4. GitHub Actions Workflow
+# ============================================
+# File: .github/workflows/apmc-scraper.yml
+name: APMC Market Data Scraper
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      log_level:
+        description: 'Log level'
+        required: false
+        default: 'INFO'
+        type: choice
+        options:
+          - DEBUG
+          - INFO
+          - WARNING
+          - ERROR
+
+jobs:
+  scrape-market-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests beautifulsoup4 lxml supabase
+    
+    - name: Run market data scraper
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        LOG_LEVEL: ${{ github.event.inputs.log_level || 'INFO' }}
+        REQUESTS_TIMEOUT: 30
+        THROTTLE_SECONDS: 1.2
+        UPSERT_BATCH_SIZE: 100
+        MAX_RETRIES: 3
+        ENABLE_CACHING: true
+        COMMODITY_HTML_DIR: ./commodity_html
+      run: |
+        python fetch_real_marketdata.py
+    
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraper-logs-${{ github.run_number }}
+        path: |
+          *.log
+        retention-days: 7
+
+---
+
+# ============================================
+# 5. Railway/Render Cron Configuration
+# ============================================
+# File: railway.json (for Railway.app)
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  },
+  "cron": {
+    "schedule": "0 */6 * * *",
+    "command": "python fetch_real_marketdata.py"
+  }
+}
+
+---
+# File: render.yaml (for Render.com)
+services:
+  - type: cron
+    name: apmc-market-scraper
+    env: python
+    schedule: "0 */6 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python fetch_real_marketdata.py
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: REQUESTS_TIMEOUT
+        value: "30"
+      - key: THROTTLE_SECONDS
+        value: "1.2"
+      - key: UPSERT_BATCH_SIZE
+        value: "100"
+
+---
+
+# ============================================
+# 6. Systemd Timer (Linux Server)
+# ============================================
+# File: /etc/systemd/system/apmc-scraper.service
+[Unit]
+Description=APMC Market Data Scraper
+After=network.target
+
+[Service]
+Type=oneshot
+User=apmc
+WorkingDirectory=/opt/apmc-scraper
+Environment="SUPABASE_URL=your_url_here"
+Environment="SUPABASE_SERVICE_ROLE_KEY=your_key_here"
+Environment="LOG_LEVEL=INFO"
+Environment="REQUESTS_TIMEOUT=30"
+Environment="THROTTLE_SECONDS=1.2"
+Environment="UPSERT_BATCH_SIZE=100"
+ExecStart=/usr/bin/python3 /opt/apmc-scraper/fetch_real_marketdata.py
+StandardOutput=append:/var/log/apmc-scraper/output.log
+StandardError=append:/var/log/apmc-scraper/error.log
+
+[Install]
+WantedBy=multi-user.target
+
+---
+# File: /etc/systemd/system/apmc-scraper.timer
+[Unit]
+Description=Run APMC Scraper every 6 hours
+Requires=apmc-scraper.service
+
+[Timer]
+# Run every 6 hours
+OnCalendar=*-*-* 00,06,12,18:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
+# Enable with:
+# sudo systemctl daemon-reload
+# sudo systemctl enable apmc-scraper.timer
+# sudo systemctl start apmc-scraper.timer
+# sudo systemctl status apmc-scraper.timer
+
+---
+
+# ============================================
+# 7. requirements.txt
+# ============================================
+# File: requirements.txt
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+supabase>=2.3.0
+
+---
+
+# ============================================
+# 8. .env.example
+# ============================================
+# File: .env.example
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+LOG_LEVEL=INFO
+REQUESTS_TIMEOUT=30
+THROTTLE_SECONDS=1.2
+UPSERT_BATCH_SIZE=100
+MAX_RETRIES=3
+ENABLE_CACHING=true
+COMMODITY_HTML_DIR=./commodity_html
+USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
