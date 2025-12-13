@@ -111,7 +111,7 @@ jobs:
               
               # Show active sources
               for source in response.data:
-                  print(f"   • {source[\"organization\"]} ({source[\"state_code\"]})")
+                  print(f"   • {source['organization']} ({source['state_code']})")
                   
           except Exception as e:
               print("")
