@@ -49,7 +49,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'  # Cache pip dependencies for faster builds
       
-      # Step 3: Verify required files exist first
+      # Step 3: Verify required files exist (before installing dependencies)
       - name: 🔍 Verify Required Files
         run: |
           echo "Checking for required files..."
@@ -69,9 +69,17 @@ jobs:
           fi
           echo "✅ commodities_dropdown.html found"
           
+          # Check requirements.txt
+          if [ ! -f "requirements.txt" ]; then
+            echo "❌ Error: requirements.txt not found!"
+            exit 1
+          fi
+          echo "✅ requirements.txt found"
+          
           # Display file sizes
           ls -lh msamb_scraper.py
           ls -lh data/commodities_dropdown.html
+          ls -lh requirements.txt
       
       # Step 4: Install Python dependencies
       - name: 📦 Install Dependencies
@@ -79,42 +87,68 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           echo "✅ Dependencies installed successfully"
+          echo ""
           echo "Installed packages:"
-          pip list | grep -E "(supabase|requests|beautifulsoup4)"
+          pip list | grep -E "supabase|requests|beautifulsoup4|lxml"
       
-      # Step 5: Test Supabase connection
+      # Step 5: Test Supabase connection (after installing dependencies)
       - name: 🔗 Test Supabase Connection
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          python -c "
+          python -c '
           import os
           from supabase import create_client
           
-          url = os.getenv('SUPABASE_URL')
-          key = os.getenv('SUPABASE_SERVICE_KEY')
+          url = os.getenv("SUPABASE_URL")
+          key = os.getenv("SUPABASE_SERVICE_KEY")
           
           if not url or not key:
-              print('❌ Supabase credentials not set')
+              print("❌ Supabase credentials not set in GitHub Secrets")
+              print("   Please add SUPABASE_URL and SUPABASE_SERVICE_KEY")
               exit(1)
+          
+          print(f"🔗 Testing connection to: {url}")
           
           try:
               supabase = create_client(url, key)
-              # Test connection by querying sources table
-              response = supabase.table('agri_market_sources').select('organization', count='exact').eq('active', True).execute()
-              print('✅ Supabase connection successful')
-              print(f'   Active sources: {len(response.data)}')
-              if response.data:
-                  orgs = [s.get('organization') for s in response.data]
-                  print(f'   Organizations: {', '.join(orgs)}')
+              
+              # Test 1: Query agri_market_sources table
+              print("   Testing agri_market_sources table...")
+              response = supabase.table("agri_market_sources").select("*").limit(1).execute()
+              source_count = len(response.data) if response.data else 0
+              
+              # Test 2: Check for MSAMB config
+              print("   Checking for MSAMB configuration...")
+              msamb_response = supabase.table("agri_market_sources").select("*").eq("organization", "MSAMB").execute()
+              has_msamb = len(msamb_response.data) > 0 if msamb_response.data else False
+              
+              print("")
+              print("✅ Supabase connection successful!")
+              print(f"   ✓ Sources found: {source_count}")
+              print(f"   ✓ MSAMB config: {\"Found\" if has_msamb else \"NOT FOUND - Please insert config!\"}")
+              
+              if not has_msamb:
+                  print("")
+                  print("⚠️  WARNING: MSAMB configuration not found in agri_market_sources")
+                  print("   Run the SQL setup script to insert MSAMB config")
+                  exit(1)
+                  
           except Exception as e:
-              print(f'❌ Supabase connection failed: {e}')
+              print("")
+              print(f"❌ Supabase connection failed!")
+              print(f"   Error: {str(e)}")
+              print("")
+              print("Possible causes:")
+              print("   1. Invalid SUPABASE_URL or SUPABASE_SERVICE_KEY")
+              print("   2. Database tables not created")
+              print("   3. Network/firewall issues")
+              print("   4. Supabase project paused or deleted")
               exit(1)
-          "
+          '
       
-      # Step 5: Test Supabase connection
-      - name: 🔗 Test Supabase Connection
+      # Step 6: Run the scraper
       - name: 🚀 Run MSAMB Scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
