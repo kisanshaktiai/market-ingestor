@@ -211,8 +211,8 @@ jobs:
           print("=" * 60)
           print("📊 SCRAPING SUMMARY REPORT")
           print("=" * 60)
-          print(f"Date: {datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")}")
-          print(f"Total Records Today: {sum(state_counts.values())}")
+          print("Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+          print("Total Records Today:", sum(state_counts.values()))
           print("")
           print("Records by State:")
           for state, count in sorted(state_counts.items()):
