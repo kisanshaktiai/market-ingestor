@@ -127,7 +127,10 @@ jobs:
               print("")
               print("✅ Supabase connection successful!")
               print(f"   ✓ Sources found: {source_count}")
-              print(f"   ✓ MSAMB config: {\"Found\" if has_msamb else \"NOT FOUND - Please insert config!\"}")
+              
+              # Fix: Avoid backslash in f-string by using variable
+              config_status = "Found" if has_msamb else "NOT FOUND - Please insert config!"
+              print(f"   ✓ MSAMB config: {config_status}")
               
               if not has_msamb:
                   print("")
@@ -137,7 +140,7 @@ jobs:
                   
           except Exception as e:
               print("")
-              print(f"❌ Supabase connection failed!")
+              print("❌ Supabase connection failed!")
               print(f"   Error: {str(e)}")
               print("")
               print("Possible causes:")
