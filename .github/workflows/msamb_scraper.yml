@@ -75,7 +75,6 @@ jobs:
           
           echo ""
           echo "✅ Scraper files verified"
-
       - name: 🔗 Test Supabase Connection
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -84,41 +83,43 @@ jobs:
           python -c '
           import os
           from supabase import create_client
-          
+      
           url = os.getenv("SUPABASE_URL")
           key = os.getenv("SUPABASE_SERVICE_KEY")
-          
+      
           if not url or not key:
               print("❌ Supabase credentials not set")
               exit(1)
-          
+      
           print(f"🔗 Testing connection to: {url}")
-          
+      
           try:
               supabase = create_client(url, key)
               response = supabase.table("agri_market_sources").select("*").eq("active", True).execute()
               active_count = len(response.data) if response.data else 0
-              
+      
               print("")
               print("✅ Supabase connection successful!")
               print(f"   ✓ Active sources: {active_count}")
-              
+      
               if active_count == 0:
                   print("")
                   print("⚠️  No active sources found")
                   print("   Please insert source configurations in agri_market_sources table")
                   exit(1)
-              
+      
               # Show active sources
               for source in response.data:
-                  print(f"   • {source['organization']} ({source['state_code']})")
-                  
+                  print("   • {} ({})".format(
+                      source.get("organization"),
+                      source.get("state_code")
+                  ))
+      
           except Exception as e:
               print("")
               print(f"❌ Connection failed: {str(e)}")
               exit(1)
           '
-
       - name: 🚀 Run APMC Scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
