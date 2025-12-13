@@ -36,7 +36,8 @@ on:
 env:
   PYTHON_VERSION: '3.11'
   TIMEZONE: 'Asia/Kolkata'
-
+  COMMODITY_HTML_DIR: ./data
+  
 jobs:
   scrape-apmc-data:
     name: Scrape APMC Market Prices
