@@ -1,97 +1,81 @@
-# .github/workflows/msamb_scraper.yml
-# GitHub Actions Cron Job - Runs MSAMB Scraper Every 24 Hours
-# Place this file in: .github/workflows/msamb_scraper.yml
+# .github/workflows/apmc_scraper.yml
+# Multi-State APMC Market Price Scraper
+# Supports running all states or specific states
 
-name: MSAMB Market Price Scraper
+name: Multi-State APMC Scraper
 
-# Trigger conditions
 on:
-  # Schedule: Run daily at 2:00 AM IST (8:30 PM UTC previous day)
+  # Schedule - run daily for all states
   schedule:
-    - cron: '30 20 * * *'  # minute hour day month day-of-week (UTC)
+    - cron: '30 20 * * *'  # 2:00 AM IST daily
   
-  # Allow manual trigger from GitHub UI
+  # Manual trigger with options
   workflow_dispatch:
     inputs:
-      log_level:
-        description: 'Log level (INFO/DEBUG)'
+      state_filter:
+        description: 'State code to scrape (leave empty for all)'
         required: false
-        default: 'INFO'
-      test_mode:
-        description: 'Run in test mode (limit commodities)'
+        type: choice
+        options:
+          - ''  # All states
+          - 'MH'  # Maharashtra
+          - 'KA'  # Karnataka
+          - 'UP'  # Uttar Pradesh
+          - 'PB'  # Punjab
+      organization:
+        description: 'Specific organization (overrides state filter)'
         required: false
-        default: 'false'
+        type: choice
+        options:
+          - ''
+          - 'MSAMB'
+          - 'KARNATAKA_APMC'
+          - 'UP_APMC'
+          - 'PUNJAB_APMC'
 
-# Environment variables available to all jobs
 env:
   PYTHON_VERSION: '3.11'
   TIMEZONE: 'Asia/Kolkata'
 
 jobs:
-  scrape-msamb-prices:
-    name: Scrape MSAMB Market Prices
+  scrape-apmc-data:
+    name: Scrape APMC Market Prices
     runs-on: ubuntu-latest
-    
-    # Maximum execution time (2 hours)
-    timeout-minutes: 120
-    
+    timeout-minutes: 180  # 3 hours for multi-state
+
     steps:
-      # Step 1: Checkout repository code
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1  # Shallow clone for faster checkout
-      
-      # Step 2: Set up Python environment
-      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'  # Cache pip dependencies for faster builds
-      
-      # Step 3: Verify required files exist (before installing dependencies)
-      - name: 🔍 Verify Required Files
-        run: |
-          echo "Checking for required files..."
-          
-          # Check Python script
-          if [ ! -f "msamb_scraper.py" ]; then
-            echo "❌ Error: msamb_scraper.py not found!"
-            exit 1
-          fi
-          echo "✅ msamb_scraper.py found"
-          
-          # Check commodity HTML file
-          if [ ! -f "data/commodities_dropdown.html" ]; then
-            echo "❌ Error: data/commodities_dropdown.html not found!"
-            echo "Please commit this file to the repository"
-            exit 1
-          fi
-          echo "✅ commodities_dropdown.html found"
-          
-          # Check requirements.txt
-          if [ ! -f "requirements.txt" ]; then
-            echo "❌ Error: requirements.txt not found!"
-            exit 1
-          fi
-          echo "✅ requirements.txt found"
-          
-          # Display file sizes
-          ls -lh msamb_scraper.py
-          ls -lh data/commodities_dropdown.html
-          ls -lh requirements.txt
-      
-      # Step 4: Install Python dependencies
+          cache: 'pip'
+
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          echo "✅ Dependencies installed successfully"
+          echo "✅ Dependencies installed"
+
+      - name: 🔍 Verify Scraper Files
+        run: |
+          echo "Checking required files..."
+          
+          if [ ! -f "apmc_scraper.py" ]; then
+            echo "❌ apmc_scraper.py not found"
+            exit 1
+          fi
+          
+          # Check for state-specific commodity files
           echo ""
-          echo "Installed packages:"
-          pip list | grep -E "supabase|requests|beautifulsoup4|lxml"
-      
-      # Step 5: Test Supabase connection (after installing dependencies)
+          echo "Available commodity files:"
+          ls -lh data/*.html 2>/dev/null || echo "⚠️  No commodity HTML files found"
+          
+          echo ""
+          echo "✅ Scraper files verified"
+
       - name: 🔗 Test Supabase Connection
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -105,273 +89,189 @@ jobs:
           key = os.getenv("SUPABASE_SERVICE_KEY")
           
           if not url or not key:
-              print("❌ Supabase credentials not set in GitHub Secrets")
-              print("   Please add SUPABASE_URL and SUPABASE_SERVICE_KEY")
+              print("❌ Supabase credentials not set")
               exit(1)
           
           print(f"🔗 Testing connection to: {url}")
           
           try:
               supabase = create_client(url, key)
-              
-              # Test 1: Query agri_market_sources table
-              print("   Testing agri_market_sources table...")
-              response = supabase.table("agri_market_sources").select("*").limit(1).execute()
-              source_count = len(response.data) if response.data else 0
-              
-              # Test 2: Check for MSAMB config
-              print("   Checking for MSAMB configuration...")
-              msamb_response = supabase.table("agri_market_sources").select("*").eq("organization", "MSAMB").execute()
-              has_msamb = len(msamb_response.data) > 0 if msamb_response.data else False
+              response = supabase.table("agri_market_sources").select("*").eq("active", True).execute()
+              active_count = len(response.data) if response.data else 0
               
               print("")
               print("✅ Supabase connection successful!")
-              print(f"   ✓ Sources found: {source_count}")
+              print(f"   ✓ Active sources: {active_count}")
               
-              # Fix: Avoid backslash in f-string by using variable
-              config_status = "Found" if has_msamb else "NOT FOUND - Please insert config!"
-              print(f"   ✓ MSAMB config: {config_status}")
-              
-              if not has_msamb:
+              if active_count == 0:
                   print("")
-                  print("⚠️  WARNING: MSAMB configuration not found in agri_market_sources")
-                  print("   Run the SQL setup script to insert MSAMB config")
+                  print("⚠️  No active sources found")
+                  print("   Please insert source configurations in agri_market_sources table")
                   exit(1)
+              
+              # Show active sources
+              for source in response.data:
+                  print(f"   • {source[\"organization\"]} ({source[\"state_code\"]})")
                   
           except Exception as e:
               print("")
-              print("❌ Supabase connection failed!")
-              print(f"   Error: {str(e)}")
-              print("")
-              print("Possible causes:")
-              print("   1. Invalid SUPABASE_URL or SUPABASE_SERVICE_KEY")
-              print("   2. Database tables not created")
-              print("   3. Network/firewall issues")
-              print("   4. Supabase project paused or deleted")
+              print(f"❌ Connection failed: {str(e)}")
               exit(1)
           '
-      
-      # Step 6: Run the scraper
-      - name: 🚀 Run MSAMB Scraper
+
+      - name: 🚀 Run APMC Scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          LOG_LEVEL: ${{ github.event.inputs.log_level || 'INFO' }}
           TZ: ${{ env.TIMEZONE }}
         run: |
-          echo "=================================="
-          echo "Starting MSAMB Market Price Scraper"
-          echo "=================================="
+          echo "========================================"
+          echo "Multi-State APMC Scraper"
+          echo "========================================"
           echo "Date: $(date '+%Y-%m-%d %H:%M:%S %Z')"
-          echo "Python Version: $(python --version)"
-          echo "Working Directory: $(pwd)"
-          echo "=================================="
+          echo "Run ID: ${{ github.run_number }}"
           echo ""
           
-          # Run the scraper
-          python msamb_scraper.py
+          # Build command with filters
+          CMD="python apmc_scraper.py"
           
-          SCRAPER_EXIT_CODE=$?
+          if [ -n "${{ github.event.inputs.organization }}" ]; then
+            echo "Mode: Single organization"
+            echo "Organization: ${{ github.event.inputs.organization }}"
+            CMD="$CMD --org ${{ github.event.inputs.organization }}"
+          elif [ -n "${{ github.event.inputs.state_filter }}" ]; then
+            echo "Mode: State filtered"
+            echo "State: ${{ github.event.inputs.state_filter }}"
+            CMD="$CMD --state ${{ github.event.inputs.state_filter }}"
+          else
+            echo "Mode: All active sources"
+          fi
+          
           echo ""
-          echo "=================================="
-          if [ $SCRAPER_EXIT_CODE -eq 0 ]; then
+          echo "Executing: $CMD"
+          echo "========================================"
+          echo ""
+          
+          $CMD
+          
+          EXIT_CODE=$?
+          echo ""
+          echo "========================================"
+          if [ $EXIT_CODE -eq 0 ]; then
             echo "✅ Scraper completed successfully"
           else
-            echo "❌ Scraper failed with exit code: $SCRAPER_EXIT_CODE"
+            echo "❌ Scraper failed with exit code: $EXIT_CODE"
           fi
-          echo "=================================="
+          echo "========================================"
           
-          exit $SCRAPER_EXIT_CODE
-      
-      # Step 7: Upload logs (runs even if scraper fails)
-      - name: 📋 Upload Scraper Logs
+          exit $EXIT_CODE
+
+      - name: 📋 Upload Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: msamb-scraper-logs-${{ github.run_number }}
+          name: apmc-scraper-logs-${{ github.run_number }}
           path: |
-            msamb_scraper.log
+            apmc_scraper.log
             *.log
           retention-days: 30
-          if-no-files-found: warn
-      
-      # Step 8: Generate summary report
-      - name: 📊 Generate Summary Report
+
+      - name: 📊 Generate Report
         if: success()
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          python -c "
+          python -c '
           import os
           from datetime import datetime, timedelta
           from supabase import create_client
           
           supabase = create_client(
-              os.getenv('SUPABASE_URL'),
-              os.getenv('SUPABASE_SERVICE_KEY')
+              os.getenv("SUPABASE_URL"),
+              os.getenv("SUPABASE_SERVICE_KEY")
           )
           
-          # Get today's records
+          # Get today data by state
           today = datetime.now().date().isoformat()
-          response = supabase.table('market_prices') \
-              .select('*', count='exact') \
-              .eq('price_date', today) \
-              .eq('source', 'msamb_scraper') \
+          response = supabase.table("market_prices") \
+              .select("state, crop_name", count="exact") \
+              .eq("price_date", today) \
               .execute()
           
-          total_records = response.count if hasattr(response, 'count') else len(response.data)
+          # Group by state
+          state_counts = {}
+          if response.data:
+              for record in response.data:
+                  state = record.get("state", "UNKNOWN")
+                  state_counts[state] = state_counts.get(state, 0) + 1
           
-          print('')
-          print('=' * 50)
-          print('📊 SCRAPING SUMMARY REPORT')
-          print('=' * 50)
-          print(f'Date: {datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")}')
-          print(f'Records added today: {total_records}')
-          print(f'Workflow Run: #{os.getenv(\"GITHUB_RUN_NUMBER\", \"N/A\")}')
-          print('=' * 50)
-          " || echo "⚠️ Could not generate summary report"
-      
-      # Step 9: Notify on failure via GitHub Issue
+          print("")
+          print("=" * 60)
+          print("📊 SCRAPING SUMMARY REPORT")
+          print("=" * 60)
+          print(f"Date: {datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")}")
+          print(f"Total Records Today: {sum(state_counts.values())}")
+          print("")
+          print("Records by State:")
+          for state, count in sorted(state_counts.items()):
+              print(f"  • {state}: {count:,} records")
+          print("=" * 60)
+          '
+
       - name: 🚨 Create Issue on Failure
         if: failure()
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const logUrl = `${runUrl}#artifacts`;
-            const date = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+            const date = new Date().toISOString().split('T')[0];
             
-            // Check if an issue already exists for today
-            const today = new Date().toISOString().split('T')[0];
-            const existingIssues = await github.rest.issues.listForRepo({
+            await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              labels: 'scraper-error',
-              state: 'open',
+              title: `🚨 APMC Scraper Failed - ${date}`,
+              body: `## Multi-State APMC Scraper Failure
+              
+              **Time:** ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
+              **Run:** [#${context.runNumber}](${runUrl})
+              **Mode:** ${{ github.event.inputs.organization || github.event.inputs.state_filter || 'All States' }}
+              
+              ---
+              
+              ### 🔍 Investigation Steps
+              
+              1. [View Logs](${runUrl}#artifacts)
+              2. Check Supabase connection
+              3. Verify state website availability
+              4. Review error patterns
+              
+              ### 📊 Quick Checks
+              
+              - [ ] Supabase credentials valid
+              - [ ] Database tables exist
+              - [ ] Source configurations active
+              - [ ] Commodity HTML files present
+              - [ ] Target websites accessible
+              
+              ---
+              
+              *🤖 Auto-generated by GitHub Actions*`,
+              labels: ['scraper-error', 'automated', 'multi-state']
             });
-            
-            const todayIssue = existingIssues.data.find(issue => 
-              issue.title.includes(today)
-            );
-            
-            if (todayIssue) {
-              // Add comment to existing issue
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: todayIssue.number,
-                body: `### 🔄 Another Failure\n\n**Time:** ${date}\n**Run:** [#${context.runNumber}](${runUrl})\n\nThe scraper failed again. Please investigate.`
-              });
-              console.log('Added comment to existing issue #' + todayIssue.number);
-            } else {
-              // Create new issue
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `🚨 MSAMB Scraper Failed - ${today}`,
-                body: `## 🚨 Scraper Failure Report
-                
-            **Failure Time:** ${date}  
-            **Workflow Run:** [#${context.runNumber}](${runUrl})  
-            **Triggered By:** ${context.eventName}
-            
-            ---
-            
-            ### 📋 Details
-            
-            The MSAMB market price scraper encountered an error during execution.
-            
-            ### 🔍 Troubleshooting Steps
-            
-            1. **Check Logs:** [View detailed logs](${logUrl})
-            2. **Verify Supabase:** 
-               - Check database connection
-               - Verify credentials are valid
-               - Ensure tables exist
-            3. **Test MSAMB Website:** 
-               - Visit: https://www.msamb.com/ApmcDetail/APMCPriceInformation
-               - Verify site is accessible
-               - Check for structure changes
-            4. **Verify Files:**
-               - Ensure \`data/commodities_dropdown.html\` exists
-               - Check commodity list is current
-            
-            ### 🔗 Quick Links
-            
-            - [View Workflow Run](${runUrl})
-            - [Download Logs](${logUrl})
-            - [Supabase Dashboard](https://app.supabase.com)
-            - [Repository](${context.serverUrl}/${context.repo.owner}/${context.repo.repo})
-            
-            ### 📊 Recent Status
-            
-            Check the Actions tab for recent workflow history.
-            
-            ---
-            
-            *🤖 This issue was automatically created by GitHub Actions*
-            *If resolved, please close this issue manually*`,
-                labels: ['scraper-error', 'automated', 'high-priority', 'bug']
-              });
-              console.log('Created new failure issue');
-            }
-      
-      # Step 10: Notify on success (optional - comment out if not needed)
-      - name: ✅ Success Notification
-        if: success()
-        run: |
-          echo "=================================="
-          echo "✅ SCRAPER COMPLETED SUCCESSFULLY"
-          echo "=================================="
-          echo "✓ Data upserted to Supabase"
-          echo "✓ Logs uploaded to artifacts"
-          echo "✓ Ready for next scheduled run"
-          echo "=================================="
-      
-      # Step 11: Cleanup
-      - name: 🧹 Cleanup
-        if: always()
-        run: |
-          echo "Cleaning up temporary files..."
-          # Add any cleanup commands here if needed
-          echo "✅ Cleanup complete"
 
-# Optional: Send notifications to external services
+# Optional: Separate job for notifications
   notify:
     name: Send Notifications
-    needs: scrape-msamb-prices
+    needs: scrape-apmc-data
+    if: always()
     runs-on: ubuntu-latest
-    if: always()  # Run even if scraper fails
     
     steps:
-      - name: 📧 Send Email Notification (Optional)
-        if: failure()
+      - name: 📧 Notification Summary
         run: |
-          echo "Email notification would be sent here"
-          echo "Configure with your email service"
-          # Example: Use SendGrid, Mailgun, or SES
-      
-      - name: 💬 Send Slack Notification (Optional)
-        if: failure()
-        # Uncomment and configure if you have Slack webhook
-        # uses: slackapi/slack-github-action@v1
-        # with:
-        #   webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-        #   payload: |
-        #     {
-        #       "text": "🚨 MSAMB Scraper Failed",
-        #       "blocks": [
-        #         {
-        #           "type": "section",
-        #           "text": {
-        #             "type": "mrkdwn",
-        #             "text": "MSAMB scraper failed. Check GitHub Actions for details."
-        #           }
-        #         }
-        #       ]
-        #     }
-        run: |
-          echo "Slack notification would be sent here"
-          echo "Add SLACK_WEBHOOK_URL to secrets to enable"
+          if [ "${{ needs.scrape-apmc-data.result }}" == "success" ]; then
+            echo "✅ Multi-state scraping completed successfully"
+          else
+            echo "❌ Multi-state scraping failed"
+          fi
