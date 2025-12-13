@@ -1,0 +1,71 @@
+"""
+Download MSAMB Commodity Dropdown HTML
+This script fetches and saves the commodity dropdown HTML for the scraper
+"""
+
+import os
+import requests
+from bs4 import BeautifulSoup
+
+def download_commodity_html():
+    """Download commodity dropdown HTML from MSAMB website"""
+    
+    url = "https://www.msamb.com/ApmcDetail/APMCPriceInformation"
+    output_dir = "./data"
+    output_file = os.path.join(output_dir, "commodities_dropdown.html")
+    
+    print(f"📡 Downloading commodity dropdown from: {url}")
+    
+    try:
+        # Create data directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Fetch the page
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=20)
+        response.raise_for_status()
+        
+        # Parse and verify commodity dropdown exists
+        soup = BeautifulSoup(response.text, 'html.parser')
+        select_tag = soup.find('select', {'id': 'drpCommodities'})
+        
+        if not select_tag:
+            print("⚠️ Warning: Commodity dropdown not found in page!")
+            print("The page structure may have changed.")
+        else:
+            options = select_tag.find_all('option')
+            print(f"✅ Found {len(options)} commodity options")
+        
+        # Save the HTML
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(response.text)
+        
+        print(f"✅ Successfully saved to: {output_file}")
+        print(f"📊 File size: {len(response.text)} bytes")
+        
+        return True
+        
+    except requests.RequestException as e:
+        print(f"❌ Error downloading HTML: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("MSAMB Commodity Dropdown Downloader")
+    print("=" * 60)
+    
+    success = download_commodity_html()
+    
+    if success:
+        print("\n✅ Download complete!")
+        print("You can now run: python msamb_scraper.py")
+    else:
+        print("\n❌ Download failed!")
+        print("Please download manually from:")
+        print("https://www.msamb.com/ApmcDetail/APMCPriceInformation")

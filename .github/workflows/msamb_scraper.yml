@@ -1,0 +1,334 @@
+# .github/workflows/msamb_scraper.yml
+# GitHub Actions Cron Job - Runs MSAMB Scraper Every 24 Hours
+# Place this file in: .github/workflows/msamb_scraper.yml
+
+name: MSAMB Market Price Scraper
+
+# Trigger conditions
+on:
+  # Schedule: Run daily at 2:00 AM IST (8:30 PM UTC previous day)
+  schedule:
+    - cron: '30 20 * * *'  # minute hour day month day-of-week (UTC)
+  
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      log_level:
+        description: 'Log level (INFO/DEBUG)'
+        required: false
+        default: 'INFO'
+      test_mode:
+        description: 'Run in test mode (limit commodities)'
+        required: false
+        default: 'false'
+
+# Environment variables available to all jobs
+env:
+  PYTHON_VERSION: '3.11'
+  TIMEZONE: 'Asia/Kolkata'
+
+jobs:
+  scrape-msamb-prices:
+    name: Scrape MSAMB Market Prices
+    runs-on: ubuntu-latest
+    
+    # Maximum execution time (2 hours)
+    timeout-minutes: 120
+    
+    steps:
+      # Step 1: Checkout repository code
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Shallow clone for faster checkout
+      
+      # Step 2: Set up Python environment
+      - name: 🐍 Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'  # Cache pip dependencies for faster builds
+      
+      # Step 3: Install Python dependencies
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "✅ Dependencies installed successfully"
+      
+      # Step 4: Verify required files exist
+      - name: 🔍 Verify Required Files
+        run: |
+          echo "Checking for required files..."
+          
+          # Check Python script
+          if [ ! -f "msamb_scraper.py" ]; then
+            echo "❌ Error: msamb_scraper.py not found!"
+            exit 1
+          fi
+          echo "✅ msamb_scraper.py found"
+          
+          # Check commodity HTML file
+          if [ ! -f "data/commodities_dropdown.html" ]; then
+            echo "❌ Error: data/commodities_dropdown.html not found!"
+            echo "Please commit this file to the repository"
+            exit 1
+          fi
+          echo "✅ commodities_dropdown.html found"
+          
+          # Display file sizes
+          ls -lh msamb_scraper.py
+          ls -lh data/commodities_dropdown.html
+      
+      # Step 5: Test Supabase connection
+      - name: 🔗 Test Supabase Connection
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -c "
+          import os
+          from supabase import create_client
+          
+          url = os.getenv('SUPABASE_URL')
+          key = os.getenv('SUPABASE_SERVICE_KEY')
+          
+          if not url or not key:
+              print('❌ Supabase credentials not set')
+              exit(1)
+          
+          try:
+              supabase = create_client(url, key)
+              # Test connection by querying a table
+              response = supabase.table('agri_market_sources').select('count', count='exact').limit(1).execute()
+              print('✅ Supabase connection successful')
+              print(f'   Total sources in database: {response.count if hasattr(response, \"count\") else \"N/A\"}')
+          except Exception as e:
+              print(f'❌ Supabase connection failed: {e}')
+              exit(1)
+          "
+      
+      # Step 6: Run the scraper
+      - name: 🚀 Run MSAMB Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LOG_LEVEL: ${{ github.event.inputs.log_level || 'INFO' }}
+          TZ: ${{ env.TIMEZONE }}
+        run: |
+          echo "=================================="
+          echo "Starting MSAMB Market Price Scraper"
+          echo "=================================="
+          echo "Date: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+          echo "Python Version: $(python --version)"
+          echo "Working Directory: $(pwd)"
+          echo "=================================="
+          echo ""
+          
+          # Run the scraper
+          python msamb_scraper.py
+          
+          SCRAPER_EXIT_CODE=$?
+          echo ""
+          echo "=================================="
+          if [ $SCRAPER_EXIT_CODE -eq 0 ]; then
+            echo "✅ Scraper completed successfully"
+          else
+            echo "❌ Scraper failed with exit code: $SCRAPER_EXIT_CODE"
+          fi
+          echo "=================================="
+          
+          exit $SCRAPER_EXIT_CODE
+      
+      # Step 7: Upload logs (runs even if scraper fails)
+      - name: 📋 Upload Scraper Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msamb-scraper-logs-${{ github.run_number }}
+          path: |
+            msamb_scraper.log
+            *.log
+          retention-days: 30
+          if-no-files-found: warn
+      
+      # Step 8: Generate summary report
+      - name: 📊 Generate Summary Report
+        if: success()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -c "
+          import os
+          from datetime import datetime, timedelta
+          from supabase import create_client
+          
+          supabase = create_client(
+              os.getenv('SUPABASE_URL'),
+              os.getenv('SUPABASE_SERVICE_KEY')
+          )
+          
+          # Get today's records
+          today = datetime.now().date().isoformat()
+          response = supabase.table('market_prices') \
+              .select('*', count='exact') \
+              .eq('price_date', today) \
+              .eq('source', 'msamb_scraper') \
+              .execute()
+          
+          total_records = response.count if hasattr(response, 'count') else len(response.data)
+          
+          print('')
+          print('=' * 50)
+          print('📊 SCRAPING SUMMARY REPORT')
+          print('=' * 50)
+          print(f'Date: {datetime.now().strftime(\"%Y-%m-%d %H:%M:%S\")}')
+          print(f'Records added today: {total_records}')
+          print(f'Workflow Run: #{os.getenv(\"GITHUB_RUN_NUMBER\", \"N/A\")}')
+          print('=' * 50)
+          " || echo "⚠️ Could not generate summary report"
+      
+      # Step 9: Notify on failure via GitHub Issue
+      - name: 🚨 Create Issue on Failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const logUrl = `${runUrl}#artifacts`;
+            const date = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+            
+            // Check if an issue already exists for today
+            const today = new Date().toISOString().split('T')[0];
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'scraper-error',
+              state: 'open',
+            });
+            
+            const todayIssue = existingIssues.data.find(issue => 
+              issue.title.includes(today)
+            );
+            
+            if (todayIssue) {
+              // Add comment to existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: todayIssue.number,
+                body: `### 🔄 Another Failure\n\n**Time:** ${date}\n**Run:** [#${context.runNumber}](${runUrl})\n\nThe scraper failed again. Please investigate.`
+              });
+              console.log('Added comment to existing issue #' + todayIssue.number);
+            } else {
+              // Create new issue
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 MSAMB Scraper Failed - ${today}`,
+                body: `## 🚨 Scraper Failure Report
+                
+            **Failure Time:** ${date}  
+            **Workflow Run:** [#${context.runNumber}](${runUrl})  
+            **Triggered By:** ${context.eventName}
+            
+            ---
+            
+            ### 📋 Details
+            
+            The MSAMB market price scraper encountered an error during execution.
+            
+            ### 🔍 Troubleshooting Steps
+            
+            1. **Check Logs:** [View detailed logs](${logUrl})
+            2. **Verify Supabase:** 
+               - Check database connection
+               - Verify credentials are valid
+               - Ensure tables exist
+            3. **Test MSAMB Website:** 
+               - Visit: https://www.msamb.com/ApmcDetail/APMCPriceInformation
+               - Verify site is accessible
+               - Check for structure changes
+            4. **Verify Files:**
+               - Ensure \`data/commodities_dropdown.html\` exists
+               - Check commodity list is current
+            
+            ### 🔗 Quick Links
+            
+            - [View Workflow Run](${runUrl})
+            - [Download Logs](${logUrl})
+            - [Supabase Dashboard](https://app.supabase.com)
+            - [Repository](${context.serverUrl}/${context.repo.owner}/${context.repo.repo})
+            
+            ### 📊 Recent Status
+            
+            Check the Actions tab for recent workflow history.
+            
+            ---
+            
+            *🤖 This issue was automatically created by GitHub Actions*
+            *If resolved, please close this issue manually*`,
+                labels: ['scraper-error', 'automated', 'high-priority', 'bug']
+              });
+              console.log('Created new failure issue');
+            }
+      
+      # Step 10: Notify on success (optional - comment out if not needed)
+      - name: ✅ Success Notification
+        if: success()
+        run: |
+          echo "=================================="
+          echo "✅ SCRAPER COMPLETED SUCCESSFULLY"
+          echo "=================================="
+          echo "✓ Data upserted to Supabase"
+          echo "✓ Logs uploaded to artifacts"
+          echo "✓ Ready for next scheduled run"
+          echo "=================================="
+      
+      # Step 11: Cleanup
+      - name: 🧹 Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up temporary files..."
+          # Add any cleanup commands here if needed
+          echo "✅ Cleanup complete"
+
+# Optional: Send notifications to external services
+  notify:
+    name: Send Notifications
+    needs: scrape-msamb-prices
+    runs-on: ubuntu-latest
+    if: always()  # Run even if scraper fails
+    
+    steps:
+      - name: 📧 Send Email Notification (Optional)
+        if: failure()
+        run: |
+          echo "Email notification would be sent here"
+          echo "Configure with your email service"
+          # Example: Use SendGrid, Mailgun, or SES
+      
+      - name: 💬 Send Slack Notification (Optional)
+        if: failure()
+        # Uncomment and configure if you have Slack webhook
+        # uses: slackapi/slack-github-action@v1
+        # with:
+        #   webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        #   payload: |
+        #     {
+        #       "text": "🚨 MSAMB Scraper Failed",
+        #       "blocks": [
+        #         {
+        #           "type": "section",
+        #           "text": {
+        #             "type": "mrkdwn",
+        #             "text": "MSAMB scraper failed. Check GitHub Actions for details."
+        #           }
+        #         }
+        #       ]
+        #     }
+        run: |
+          echo "Slack notification would be sent here"
+          echo "Add SLACK_WEBHOOK_URL to secrets to enable"

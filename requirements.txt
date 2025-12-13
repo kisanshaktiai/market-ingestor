@@ -1,7 +1,16 @@
-beautifulsoup4==4.12.2
-requests==2.31.0
-lxml==4.9.3
+# requirements.txt
+# Python dependencies for MSAMB Market Price Scraper
 
-# Supabase v2 client + matching PostgREST
-supabase==2.25.0
-postgrest==2.25.0
+# Web scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.1.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Utilities
+python-dateutil>=2.8.2
+
+# Optional: For enhanced logging and monitoring
+sentry-sdk>=1.40.0
