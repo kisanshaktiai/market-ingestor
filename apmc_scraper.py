@@ -64,6 +64,8 @@ class BaseAPMCScraper(ABC):
         self.state_code = config.get("state_code")
 
         logger.info("Initialized %s scraper for %s", self.organization, self.state_code)
+        logger.info("Completed commodity %s", code)
+
 
     # ---------------- Resume helpers ----------------
 
@@ -344,7 +346,10 @@ class APMCOrchestrator:
 
         # Do NOT hard-fail on temporary network issues
         if results and all(r.get("records_upserted", 0) == 0 for r in results):
-            logger.warning("All scrapers returned zero records (non-fatal)")
+            logger.warning("No new records found (resume state)")
+        
+        # ALWAYS exit success — scraper completion ≠ new data
+        sys.exit(0)
 
 
 # ============================================================
