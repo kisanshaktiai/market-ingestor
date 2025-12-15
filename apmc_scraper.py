@@ -4,7 +4,10 @@ Dynamic Multi-State APMC Market Scraper
 Author: Amarsinh Patil (KisanShaktiAI)
 
 • Source-driven via agri_market_sources
-• Session-safe scraping
+• Works with MSAMB and future APMCs
+• Session-safe (header based, cookie optional)
+• Robust HTML parsing
+• Regex-based date detection (FIXED ROOT CAUSE)
 • CSV artifact output
 • Supabase upsert (market_prices)
 • Resume-from-last-success
@@ -14,6 +17,7 @@ import os
 import sys
 import csv
 import time
+import re
 import datetime
 import logging
 from typing import Dict, List, Optional
@@ -55,13 +59,24 @@ def build_url(base: str, path: str) -> str:
     return path if path.startswith("http") else urljoin(base.rstrip("/") + "/", path.lstrip("/"))
 
 def clean_num(v: Optional[str]) -> Optional[float]:
-    import re
     v = re.sub(r"[^0-9.]", "", v or "")
     return float(v) if v else None
 
-def parse_date_any(s: str, fmt: str) -> Optional[str]:
+def parse_date_flexible(text: str) -> Optional[str]:
+    """
+    Robust date parser:
+    Handles 15/12/2025, 15-12-2025, 15.12.2025
+    """
+    if not text:
+        return None
+
+    m = re.search(r"(\d{1,2})\D(\d{1,2})\D(\d{4})", text)
+    if not m:
+        return None
+
+    d, mth, y = m.groups()
     try:
-        return datetime.datetime.strptime(s.strip(), fmt).date().isoformat()
+        return datetime.date(int(y), int(mth), int(d)).isoformat()
     except Exception:
         return None
 
@@ -72,6 +87,7 @@ class BaseAPMCScraper(ABC):
     def __init__(self, sb: Client, src: Dict):
         self.sb = sb
         self.src = src
+
         self.source_id = src["id"]
         self.organization = src["organization"]
         self.state_code = src.get("state_code")
@@ -85,8 +101,7 @@ class BaseAPMCScraper(ABC):
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": self.src["base_url"],
-            "Origin": self.src["base_url"],
+            "Referer": src.get("base_url"),
             "X-Requested-With": "XMLHttpRequest",
             "Connection": "keep-alive",
         })
@@ -119,25 +134,17 @@ class BaseAPMCScraper(ABC):
             main_url = build_url(self.src["base_url"], self.src["main_page"])
             r = self.session.get(main_url, allow_redirects=True, timeout=30)
             r.raise_for_status()
+            log.info("✅ Session initialized (cookies=%s)", self.session.cookies.get_dict())
 
-            cookies = self.session.cookies.get_dict()
-            log.info("✅ Session established | cookies=%s", cookies)
-            
-            if not cookies:
-                log.warning(
-                    "⚠️ MSAMB did not set cookies. "
-                    "This is normal. Proceeding with header-based session."
+            # Warm-up AJAX call (critical for MSAMB)
+            try:
+                self.session.post(
+                    build_url(self.src["base_url"], self.src["data_endpoint"]),
+                    data={"commodityCode": "08035", "apmcCode": "null"},
+                    timeout=20,
                 )
-
-
-            # Warm-up AJAX call (forces MSAMB to bind session internally)
-            self.session.post(
-                build_url(self.src["base_url"], self.src["data_endpoint"]),
-                data={"commodityCode": "08035", "apmcCode": "null"},
-                timeout=20,
-            )
-
-
+            except Exception:
+                pass
 
         commodities = self.load_commodities()
         log.info("Loaded %d commodities", len(commodities))
@@ -226,14 +233,14 @@ class MSAMBScraper(BaseAPMCScraper):
     def fetch_prices(self, code: str, name: str) -> List[Dict]:
         url = build_url(self.src["base_url"], self.src["data_endpoint"])
 
-        # Try POST first (required by MSAMB)
+        # POST (primary)
         r = self.session.post(
             url,
             data={"commodityCode": code, "apmcCode": "null"},
             timeout=30,
         )
 
-        # Fallback to GET
+        # GET fallback
         if r.status_code != 200 or "<tr" not in r.text:
             r = self.session.get(
                 url,
@@ -246,31 +253,32 @@ class MSAMBScraper(BaseAPMCScraper):
             return []
 
         soup = BeautifulSoup(r.text, "html.parser")
-        rows = []
-        current_date = None
-        date_fmt = self.src.get("date_format", "%d/%m/%Y")
+        rows: List[Dict] = []
+        current_date: Optional[str] = None
 
         for tr in soup.find_all("tr"):
             tds = tr.find_all("td")
 
-            if len(tds) == 1:
-                current_date = parse_date_any(tds[0].text, date_fmt)
+            # Date row
+            if len(tds) == 1 or (len(tds) >= 1 and tds[0].has_attr("colspan")):
+                current_date = parse_date_flexible(tds[0].get_text(strip=True))
                 continue
 
+            # Data row
             if len(tds) >= 7 and current_date:
                 rows.append({
                     "source_id": self.source_id,
                     "commodity_code": code,
                     "crop_name": name,
-                    "market_location": tds[0].text.strip(),
-                    "variety": tds[1].text.strip(),
-                    "unit": tds[2].text.strip(),
-                    "arrival": clean_num(tds[3].text),
-                    "min_price": clean_num(tds[4].text),
-                    "max_price": clean_num(tds[5].text),
-                    "modal_price": clean_num(tds[6].text),
+                    "market_location": tds[0].get_text(strip=True),
+                    "variety": tds[1].get_text(strip=True),
+                    "unit": tds[2].get_text(strip=True),
+                    "arrival": clean_num(tds[3].get_text()),
+                    "min_price": clean_num(tds[4].get_text()),
+                    "max_price": clean_num(tds[5].get_text()),
+                    "modal_price": clean_num(tds[6].get_text()),
                     "price_date": current_date,
-                    "price_per_unit": clean_num(tds[6].text) or 0,
+                    "price_per_unit": clean_num(tds[6].get_text()) or 0,
                     "source": self.organization,
                     "status": "ready",
                 })
