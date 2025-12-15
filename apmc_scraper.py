@@ -156,7 +156,8 @@ class BaseAPMCScraper(ABC):
             self._update_resume(all_rows)
 
         success = True  # scraper executed correctly
-           log.info(
+           
+        log.info(
                 "%s | parsed=%d | inserted=%d",
                 self.organization,
                 parsed,
