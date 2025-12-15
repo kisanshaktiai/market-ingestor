@@ -193,10 +193,10 @@ class BaseAPMCScraper(ABC):
 
     # --------------------------------------------------------
     def _upsert(self, rows: List[Dict]):
-    """
-    Deduplicate rows by unique constraint BEFORE upsert
-    Required to avoid Postgres error 21000
-    """
+    # """
+    # Deduplicate rows by unique constraint BEFORE upsert
+    # Required to avoid Postgres error 21000
+    # """
 
     deduped = {}
 
