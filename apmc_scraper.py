@@ -4,10 +4,10 @@ Dynamic Multi-State APMC Market Scraper
 Author: Amarsinh Patil (KisanShaktiAI)
 
 • Source-driven via agri_market_sources
-• Works with MSAMB and future APMCs
-• Session-safe (header based, cookie optional)
-• Robust HTML parsing
-• Regex-based date detection (FIXED ROOT CAUSE)
+• Dynamic (no hardcoding)
+• MSAMB verified
+• Session-safe (POST + GET fallback)
+• Robust date parsing
 • CSV artifact output
 • Supabase upsert (market_prices)
 • Resume-from-last-success
@@ -63,17 +63,11 @@ def clean_num(v: Optional[str]) -> Optional[float]:
     return float(v) if v else None
 
 def parse_date_flexible(text: str) -> Optional[str]:
-    """
-    Robust date parser:
-    Handles 15/12/2025, 15-12-2025, 15.12.2025
-    """
     if not text:
         return None
-
     m = re.search(r"(\d{1,2})\D(\d{1,2})\D(\d{4})", text)
     if not m:
         return None
-
     d, mth, y = m.groups()
     try:
         return datetime.date(int(y), int(mth), int(d)).isoformat()
@@ -112,7 +106,6 @@ class BaseAPMCScraper(ABC):
             f"{self.organization.lower()}_{self.state_code}_{today}.csv",
         )
 
-    # --------------------------------------------------------
     @abstractmethod
     def load_commodities(self) -> Dict[str, str]:
         pass
@@ -127,16 +120,16 @@ class BaseAPMCScraper(ABC):
 
         resume = (self.src.get("metadata") or {}).get("resume", {})
         all_rows: List[Dict] = []
-        parsed = skipped = 0
+        parsed = 0
 
         # Establish session if required
         if self.src.get("page_requires_session"):
             main_url = build_url(self.src["base_url"], self.src["main_page"])
-            r = self.session.get(main_url, allow_redirects=True, timeout=30)
+            r = self.session.get(main_url, timeout=30)
             r.raise_for_status()
-            log.info("✅ Session initialized (cookies=%s)", self.session.cookies.get_dict())
+            log.info("✅ Session initialized")
 
-            # Warm-up AJAX call (critical for MSAMB)
+            # MSAMB warm-up
             try:
                 self.session.post(
                     build_url(self.src["base_url"], self.src["data_endpoint"]),
@@ -156,7 +149,6 @@ class BaseAPMCScraper(ABC):
             last_date = resume.get(code)
             if last_date:
                 rows = [r for r in rows if r["price_date"] > last_date]
-                skipped += parsed - len(rows)
 
             all_rows.extend(rows)
             time.sleep(float(self.src.get("throttle_seconds", 1.2)))
@@ -192,41 +184,31 @@ class BaseAPMCScraper(ABC):
         log.info("📁 CSV written → %s (%d rows)", self.csv_path, len(rows))
 
     # --------------------------------------------------------
-    
     def _upsert(self, rows: List[Dict]):
-    
-    deduped = {}
+        deduped: Dict[tuple, Dict] = {}
 
-    for r in rows:
-        key = (
-            r["source_id"],
-            r["commodity_code"],
-            r["price_date"],
-            r["market_location"],
-        )
-
-        # keep the row with higher modal price (or last one)
-        if key not in deduped:
-            deduped[key] = r
-        else:
-            old = deduped[key]
-            if (r.get("modal_price") or 0) > (old.get("modal_price") or 0):
+        for r in rows:
+            key = (
+                r["source_id"],
+                r["commodity_code"],
+                r["price_date"],
+                r["market_location"],
+            )
+            if key not in deduped:
                 deduped[key] = r
+            else:
+                old = deduped[key]
+                if (r.get("modal_price") or 0) > (old.get("modal_price") or 0):
+                    deduped[key] = r
 
         final_rows = list(deduped.values())
-    
-        log.info(
-            "🔁 Deduplicated rows: %d → %d",
-            len(rows),
-            len(final_rows),
-        )
-    
+        log.info("🔁 Deduplicated rows: %d → %d", len(rows), len(final_rows))
+
         for i in range(0, len(final_rows), 100):
             self.sb.table("market_prices").upsert(
                 final_rows[i:i + 100],
                 on_conflict="source_id,commodity_code,price_date,market_location",
             ).execute()
-
 
     # --------------------------------------------------------
     def _update_resume(self, rows: List[Dict]):
@@ -262,20 +244,9 @@ class MSAMBScraper(BaseAPMCScraper):
     def fetch_prices(self, code: str, name: str) -> List[Dict]:
         url = build_url(self.src["base_url"], self.src["data_endpoint"])
 
-        # POST (primary)
-        r = self.session.post(
-            url,
-            data={"commodityCode": code, "apmcCode": "null"},
-            timeout=30,
-        )
-
-        # GET fallback
+        r = self.session.post(url, data={"commodityCode": code, "apmcCode": "null"}, timeout=30)
         if r.status_code != 200 or "<tr" not in r.text:
-            r = self.session.get(
-                url,
-                params={"commodityCode": code, "apmcCode": "null"},
-                timeout=30,
-            )
+            r = self.session.get(url, params={"commodityCode": code, "apmcCode": "null"}, timeout=30)
 
         if r.status_code != 200 or "<tr" not in r.text:
             log.warning("⚠️ No data | %s (%s)", name, code)
@@ -288,12 +259,10 @@ class MSAMBScraper(BaseAPMCScraper):
         for tr in soup.find_all("tr"):
             tds = tr.find_all("td")
 
-            # Date row
-            if len(tds) == 1 or (len(tds) >= 1 and tds[0].has_attr("colspan")):
+            if len(tds) == 1 or tds[0].has_attr("colspan"):
                 current_date = parse_date_flexible(tds[0].get_text(strip=True))
                 continue
 
-            # Data row
             if len(tds) >= 7 and current_date:
                 rows.append({
                     "source_id": self.source_id,
@@ -316,15 +285,10 @@ class MSAMBScraper(BaseAPMCScraper):
         return rows
 
 # ============================================================
-# FACTORY
+# FACTORY + MAIN
 # ============================================================
-SCRAPER_MAP = {
-    "MSAMB": MSAMBScraper,
-}
+SCRAPER_MAP = {"MSAMB": MSAMBScraper}
 
-# ============================================================
-# MAIN
-# ============================================================
 if __name__ == "__main__":
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
