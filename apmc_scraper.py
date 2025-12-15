@@ -290,24 +290,27 @@ class APMCOrchestrator:
         self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     def run_all(self):
-        sources = (
-            self.supabase.table("agri_market_sources")
-            .select("*")
-            .eq("active", True)
-            .execute()
-            .data
-        )
+        # ❗ Fetch ALL rows (no boolean filter)
+        resp = self.supabase.table("agri_market_sources").select("*").execute()
+        rows = resp.data or []
+
+        # ✅ Client-side boolean filter (SAFE)
+        sources = [r for r in rows if r.get("active") is True]
+
+        logger.info("Loaded %d active agri_market_sources", len(sources))
 
         results = []
         for src in sources:
-            stats = {"organization": src["organization"], "success": False}
+            stats = {"organization": src.get("organization"), "success": False}
             try:
                 scraper = ScraperFactory.create(self.supabase, src)
                 stats.update(scraper.run())
             except Exception as e:
                 stats["error"] = str(e)
+                logger.exception("Scraper failed for source %s", src.get("organization"))
             results.append(stats)
 
+        # Exit non-zero only if ALL scrapers failed
         if results and all(not r.get("success") for r in results):
             sys.exit(1)
 
