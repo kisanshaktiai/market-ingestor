@@ -192,12 +192,9 @@ class BaseAPMCScraper(ABC):
         log.info("📁 CSV written → %s (%d rows)", self.csv_path, len(rows))
 
     # --------------------------------------------------------
+    
     def _upsert(self, rows: List[Dict]):
-    # """
-    # Deduplicate rows by unique constraint BEFORE upsert
-    # Required to avoid Postgres error 21000
-    # """
-
+    
     deduped = {}
 
     for r in rows:
