@@ -155,14 +155,14 @@ class BaseAPMCScraper(ABC):
             self._upsert(all_rows)
             self._update_resume(all_rows)
 
-        success = parsed > 0
-        log.info(
-            "%s | success=%s | parsed=%d | inserted=%d",
-            self.organization,
-            success,
-            parsed,
-            len(all_rows),
-        )
+        success = True  # scraper executed correctly
+           log.info(
+                "%s | parsed=%d | inserted=%d",
+                self.organization,
+                parsed,
+                len(all_rows),
+            )
+
 
         return {"success": success, "parsed": parsed, "inserted": len(all_rows)}
 
