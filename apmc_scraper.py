@@ -125,9 +125,10 @@ class BaseAPMCScraper(ABC):
             
             if not cookies:
                 log.warning(
-                    "⚠️ No cookies set by MSAMB (this is normal). "
-                    "Proceeding with header-based session."
+                    "⚠️ MSAMB did not set cookies. "
+                    "This is normal. Proceeding with header-based session."
                 )
+
 
             # Warm-up AJAX call (forces MSAMB to bind session internally)
             self.session.post(
