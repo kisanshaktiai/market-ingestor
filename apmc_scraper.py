@@ -193,11 +193,43 @@ class BaseAPMCScraper(ABC):
 
     # --------------------------------------------------------
     def _upsert(self, rows: List[Dict]):
-        for i in range(0, len(rows), 100):
+    """
+    Deduplicate rows by unique constraint BEFORE upsert
+    Required to avoid Postgres error 21000
+    """
+
+    deduped = {}
+
+    for r in rows:
+        key = (
+            r["source_id"],
+            r["commodity_code"],
+            r["price_date"],
+            r["market_location"],
+        )
+
+        # keep the row with higher modal price (or last one)
+        if key not in deduped:
+            deduped[key] = r
+        else:
+            old = deduped[key]
+            if (r.get("modal_price") or 0) > (old.get("modal_price") or 0):
+                deduped[key] = r
+
+        final_rows = list(deduped.values())
+    
+        log.info(
+            "🔁 Deduplicated rows: %d → %d",
+            len(rows),
+            len(final_rows),
+        )
+    
+        for i in range(0, len(final_rows), 100):
             self.sb.table("market_prices").upsert(
-                rows[i:i + 100],
+                final_rows[i:i + 100],
                 on_conflict="source_id,commodity_code,price_date,market_location",
             ).execute()
+
 
     # --------------------------------------------------------
     def _update_resume(self, rows: List[Dict]):
