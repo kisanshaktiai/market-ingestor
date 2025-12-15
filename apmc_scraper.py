@@ -122,9 +122,21 @@ class BaseAPMCScraper(ABC):
 
             cookies = self.session.cookies.get_dict()
             log.info("✅ Session established | cookies=%s", cookies)
-
+            
             if not cookies:
-                raise RuntimeError("❌ MSAMB session cookies NOT created")
+                log.warning(
+                    "⚠️ No cookies set by MSAMB (this is normal). "
+                    "Proceeding with header-based session."
+                )
+
+            # Warm-up AJAX call (forces MSAMB to bind session internally)
+            self.session.post(
+                build_url(self.src["base_url"], self.src["data_endpoint"]),
+                data={"commodityCode": "08035", "apmcCode": "null"},
+                timeout=20,
+            )
+
+
 
         commodities = self.load_commodities()
         log.info("Loaded %d commodities", len(commodities))
