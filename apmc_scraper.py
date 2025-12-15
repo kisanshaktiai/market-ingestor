@@ -86,9 +86,12 @@ class BaseAPMCScraper(ABC):
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": src.get("base_url"),
+            "Referer": self.src["base_url"],
+            "Origin": self.src["base_url"],
+            "X-Requested-With": "XMLHttpRequest",
             "Connection": "keep-alive",
         })
+
 
         today = datetime.date.today().isoformat()
         self.csv_path = os.path.join(
@@ -116,8 +119,19 @@ class BaseAPMCScraper(ABC):
         # establish session if required
         if self.src.get("page_requires_session"):
             main_url = build_url(self.src["base_url"], self.src["main_page"])
-            r = self.session.get(main_url, timeout=20)
+           r = self.session.get(
+                main_url,
+                allow_redirects=True,
+                timeout=30,
+            )
             r.raise_for_status()
+            
+            cookies = self.session.cookies.get_dict()
+            log.info("✅ Session established | cookies=%s", cookies)
+            
+            if not cookies:
+                raise RuntimeError("❌ MSAMB session cookies NOT created")
+
             log.info("✅ Session established | cookies=%s", self.session.cookies.get_dict())
 
         commodities = self.load_commodities()
@@ -206,11 +220,26 @@ class MSAMBScraper(BaseAPMCScraper):
 
     def fetch_prices(self, code: str, name: str) -> List[Dict]:
         url = build_url(self.src["base_url"], self.src["data_endpoint"])
-        r = self.session.get(
+       # 1️⃣ TRY POST FIRST (MSAMB EXPECTS THIS)
+        r = self.session.post(
             url,
-            params={"commodityCode": code, "apmcCode": "null"},
+            data={
+                "commodityCode": code,
+                "apmcCode": "null",
+            },
             timeout=30,
         )
+        
+        # 2️⃣ FALL BACK TO GET ONLY IF POST FAILS
+        if r.status_code != 200 or "<tr" not in r.text:
+            r = self.session.get(
+                url,
+                params={
+                    "commodityCode": code,
+                    "apmcCode": "null",
+                },
+                timeout=30,
+            )
 
         if r.status_code != 200 or "<tr" not in r.text:
             log.error("❌ EMPTY HTML | %s | code=%s | len=%d", url, code, len(r.text))
