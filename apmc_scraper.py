@@ -14,7 +14,6 @@ import os
 import sys
 import csv
 import time
-import json
 import datetime
 import logging
 from typing import Dict, List, Optional
@@ -92,7 +91,6 @@ class BaseAPMCScraper(ABC):
             "Connection": "keep-alive",
         })
 
-
         today = datetime.date.today().isoformat()
         self.csv_path = os.path.join(
             OUTPUT_DIR,
@@ -116,23 +114,17 @@ class BaseAPMCScraper(ABC):
         all_rows: List[Dict] = []
         parsed = skipped = 0
 
-        # establish session if required
+        # Establish session if required
         if self.src.get("page_requires_session"):
             main_url = build_url(self.src["base_url"], self.src["main_page"])
-           r = self.session.get(
-                main_url,
-                allow_redirects=True,
-                timeout=30,
-            )
+            r = self.session.get(main_url, allow_redirects=True, timeout=30)
             r.raise_for_status()
-            
+
             cookies = self.session.cookies.get_dict()
             log.info("✅ Session established | cookies=%s", cookies)
-            
+
             if not cookies:
                 raise RuntimeError("❌ MSAMB session cookies NOT created")
-
-            log.info("✅ Session established | cookies=%s", self.session.cookies.get_dict())
 
         commodities = self.load_commodities()
         log.info("Loaded %d commodities", len(commodities))
@@ -155,17 +147,14 @@ class BaseAPMCScraper(ABC):
             self._upsert(all_rows)
             self._update_resume(all_rows)
 
-        success = True  # scraper executed correctly
-           
         log.info(
-                "%s | parsed=%d | inserted=%d",
-                self.organization,
-                parsed,
-                len(all_rows),
-            )
+            "%s | parsed=%d | inserted=%d",
+            self.organization,
+            parsed,
+            len(all_rows),
+        )
 
-
-        return {"success": success, "parsed": parsed, "inserted": len(all_rows)}
+        return {"success": True, "parsed": parsed, "inserted": len(all_rows)}
 
     # --------------------------------------------------------
     def _write_csv(self, rows: List[Dict]):
@@ -175,10 +164,10 @@ class BaseAPMCScraper(ABC):
             "modal_price", "price_date",
         ]
         with open(self.csv_path, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=fields)
-            w.writeheader()
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
             for r in rows:
-                w.writerow({k: r.get(k) for k in fields})
+                writer.writerow({k: r.get(k) for k in fields})
 
         log.info("📁 CSV written → %s (%d rows)", self.csv_path, len(rows))
 
@@ -186,7 +175,7 @@ class BaseAPMCScraper(ABC):
     def _upsert(self, rows: List[Dict]):
         for i in range(0, len(rows), 100):
             self.sb.table("market_prices").upsert(
-                rows[i:i+100],
+                rows[i:i + 100],
                 on_conflict="source_id,commodity_code,price_date,market_location",
             ).execute()
 
@@ -212,7 +201,9 @@ class BaseAPMCScraper(ABC):
 class MSAMBScraper(BaseAPMCScraper):
     def load_commodities(self) -> Dict[str, str]:
         path = os.path.join(COMMODITY_HTML_DIR, self.src["commodity_html_path"])
-        soup = BeautifulSoup(open(path, encoding="utf-8").read(), "lxml")
+        with open(path, encoding="utf-8") as f:
+            soup = BeautifulSoup(f.read(), "lxml")
+
         return {
             o["value"]: o.text.strip()
             for o in soup.select("#drpCommodities option")
@@ -221,33 +212,29 @@ class MSAMBScraper(BaseAPMCScraper):
 
     def fetch_prices(self, code: str, name: str) -> List[Dict]:
         url = build_url(self.src["base_url"], self.src["data_endpoint"])
-       # 1️⃣ TRY POST FIRST (MSAMB EXPECTS THIS)
+
+        # Try POST first (required by MSAMB)
         r = self.session.post(
             url,
-            data={
-                "commodityCode": code,
-                "apmcCode": "null",
-            },
+            data={"commodityCode": code, "apmcCode": "null"},
             timeout=30,
         )
-        
-        # 2️⃣ FALL BACK TO GET ONLY IF POST FAILS
+
+        # Fallback to GET
         if r.status_code != 200 or "<tr" not in r.text:
             r = self.session.get(
                 url,
-                params={
-                    "commodityCode": code,
-                    "apmcCode": "null",
-                },
+                params={"commodityCode": code, "apmcCode": "null"},
                 timeout=30,
             )
 
         if r.status_code != 200 or "<tr" not in r.text:
-            log.error("❌ EMPTY HTML | %s | code=%s | len=%d", url, code, len(r.text))
+            log.warning("⚠️ No data | %s (%s)", name, code)
             return []
 
         soup = BeautifulSoup(r.text, "html.parser")
-        rows, current_date = [], None
+        rows = []
+        current_date = None
         date_fmt = self.src.get("date_format", "%d/%m/%Y")
 
         for tr in soup.find_all("tr"):
@@ -291,7 +278,14 @@ SCRAPER_MAP = {
 if __name__ == "__main__":
     sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    sources = sb.table("agri_market_sources").select("*").eq("active", True).execute().data
+    sources = (
+        sb.table("agri_market_sources")
+        .select("*")
+        .eq("active", True)
+        .execute()
+        .data
+    )
+
     log.info("Loaded %d active agri_market_sources", len(sources))
 
     failures = 0
